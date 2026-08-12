@@ -59,6 +59,16 @@ The fix is threshold selection, not a new architecture — sweep the decision th
 
 > **On the AUC figures.** Train/val/test splits are random over 4-second windows with 50% overlap, so a window and its overlapping neighbour — sharing two seconds of identical signal — can land on opposite sides of the split. The reported AUC is optimistic as a result, and a patient-independent split would be the honest evaluation. See [Limitations](#limitations).
 
+### Threshold sweep (planned)
+
+The CNNs' high AUC alongside zero sensitivity points to a threshold-selection problem rather than a modeling one. The next step is to sweep the decision threshold across the test set and report the sensitivity / false-alarms-per-hour tradeoff, then select an operating point deliberately rather than inheriting `argmax`'s implicit 0.5.
+
+[`src/threshold_sweep.py`](src/threshold_sweep.py) implements this and runs in minutes on an existing checkpoint — no retraining required. It is pending recovery of the trained weights, which were never committed to this repository.
+
+```bash
+python src/threshold_sweep.py --data ./data --checkpoint cnn2d.pth --model 2d
+```
+
 ## How it works
 
 ### Preprocessing
@@ -96,6 +106,7 @@ src/
   train_1dcnn.py     1D CNN training entry point
   train_cnn2d.py     2D CNN training entry point
   baseline_models.py Logistic Regression / SVM / Random Forest baselines
+  threshold_sweep.py Decision-threshold sweep over a trained checkpoint
 docs/
   final-report.pdf   Written report
   presentation.pdf   Slide deck
