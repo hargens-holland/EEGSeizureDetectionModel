@@ -1,0 +1,44 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 780 400" width="780" height="400" font-family='system-ui,-apple-system,"Segoe UI",sans-serif' role="img" aria-label="Test AUC versus sensitivity for five seizure detection models. AUC ranges from 0.506 to 0.999 while sensitivity is 0.000 for every model.">
+<text x="24" y="30" font-size="16" font-weight="600" fill="#0b0b0b">Every model ranks well. None of them ever fires.</text>
+<text x="24" y="50" font-size="12.5" fill="#52514e">CHB-MIT test split &#183; AUC measures ranking, sensitivity measures actual seizure detections</text>
+<rect x="24" y="62" width="10" height="10" rx="2" fill="#2a78d6"/>
+<text x="40" y="71" font-size="12" fill="#52514e">AUC</text>
+<rect x="82" y="62" width="10" height="10" rx="2" fill="#eb6834"/>
+<text x="98" y="71" font-size="12" fill="#52514e">Sensitivity</text>
+<line x1="210.0" y1="74" x2="210.0" y2="333" stroke="#c3c2b7" stroke-width="1"/>
+<text x="210.0" y="351" font-size="11" fill="#898781" text-anchor="middle" font-variant-numeric="tabular-nums">0.00</text>
+<line x1="332.0" y1="74" x2="332.0" y2="333" stroke="#e1e0d9" stroke-width="1"/>
+<text x="332.0" y="351" font-size="11" fill="#898781" text-anchor="middle" font-variant-numeric="tabular-nums">0.25</text>
+<line x1="454.0" y1="74" x2="454.0" y2="333" stroke="#e1e0d9" stroke-width="1"/>
+<text x="454.0" y="351" font-size="11" fill="#898781" text-anchor="middle" font-variant-numeric="tabular-nums">0.50</text>
+<line x1="576.0" y1="74" x2="576.0" y2="333" stroke="#e1e0d9" stroke-width="1"/>
+<text x="576.0" y="351" font-size="11" fill="#898781" text-anchor="middle" font-variant-numeric="tabular-nums">0.75</text>
+<line x1="698.0" y1="74" x2="698.0" y2="333" stroke="#e1e0d9" stroke-width="1"/>
+<text x="698.0" y="351" font-size="11" fill="#898781" text-anchor="middle" font-variant-numeric="tabular-nums">1.00</text>
+<text x="196" y="103.5" font-size="12.5" fill="#0b0b0b" text-anchor="end">Logistic Regression</text>
+<path d="M210.0 84.0 H452.9 A4 4 0 0 1 456.9 88.0 V94.0 A4 4 0 0 1 452.9 98.0 H210.0 Z" fill="#2a78d6"/>
+<text x="464.9" y="95.5" font-size="11.5" fill="#52514e" font-variant-numeric="tabular-nums">0.506</text>
+<rect x="210" y="101" width="2" height="14" fill="#eb6834"/>
+<text x="218" y="112.5" font-size="11.5" fill="#eb6834" font-weight="600" font-variant-numeric="tabular-nums">0.000</text>
+<text x="196" y="156.5" font-size="12.5" fill="#0b0b0b" text-anchor="end">SVM (RBF)</text>
+<path d="M210.0 137.0 H482.7 A4 4 0 0 1 486.7 141.0 V147.0 A4 4 0 0 1 482.7 151.0 H210.0 Z" fill="#2a78d6"/>
+<text x="494.7" y="148.5" font-size="11.5" fill="#52514e" font-variant-numeric="tabular-nums">0.567</text>
+<rect x="210" y="154" width="2" height="14" fill="#eb6834"/>
+<text x="218" y="165.5" font-size="11.5" fill="#eb6834" font-weight="600" font-variant-numeric="tabular-nums">0.000</text>
+<text x="196" y="209.5" font-size="12.5" fill="#0b0b0b" text-anchor="end">Random Forest</text>
+<path d="M210.0 190.0 H506.1 A4 4 0 0 1 510.1 194.0 V200.0 A4 4 0 0 1 506.1 204.0 H210.0 Z" fill="#2a78d6"/>
+<text x="518.1" y="201.5" font-size="11.5" fill="#52514e" font-variant-numeric="tabular-nums">0.615</text>
+<rect x="210" y="207" width="2" height="14" fill="#eb6834"/>
+<text x="218" y="218.5" font-size="11.5" fill="#eb6834" font-weight="600" font-variant-numeric="tabular-nums">0.000</text>
+<text x="196" y="262.5" font-size="12.5" fill="#0b0b0b" text-anchor="end">2D CNN (spectrogram)</text>
+<path d="M210.0 243.0 H682.3 A4 4 0 0 1 686.3 247.0 V253.0 A4 4 0 0 1 682.3 257.0 H210.0 Z" fill="#2a78d6"/>
+<text x="694.3" y="254.5" font-size="11.5" fill="#52514e" font-variant-numeric="tabular-nums">0.976</text>
+<rect x="210" y="260" width="2" height="14" fill="#eb6834"/>
+<text x="218" y="271.5" font-size="11.5" fill="#eb6834" font-weight="600" font-variant-numeric="tabular-nums">0.000</text>
+<text x="196" y="315.5" font-size="12.5" fill="#0b0b0b" text-anchor="end">1D CNN (raw)</text>
+<path d="M210.0 296.0 H693.5 A4 4 0 0 1 697.5 300.0 V306.0 A4 4 0 0 1 693.5 310.0 H210.0 Z" fill="#2a78d6"/>
+<text x="705.5" y="307.5" font-size="11.5" fill="#52514e" font-variant-numeric="tabular-nums">0.999</text>
+<rect x="210" y="313" width="2" height="14" fill="#eb6834"/>
+<text x="218" y="324.5" font-size="11.5" fill="#eb6834" font-weight="600" font-variant-numeric="tabular-nums">0.000</text>
+<text x="24" y="390" font-size="11.5" fill="#898781">Sensitivity is 0.000 for all five models &#8212; not one seizure window was ever predicted positive.</text>
+</svg>

@@ -1,0 +1,39 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.Python
+build/
+dist/
+
+# Virtual environments
+.venv/
+venv/
+env/
+
+# Model checkpoints
+*.pth
+*.pt
+*.ckpt
+*.onnx
+
+# Data — CHB-MIT recordings are tens of GB, never commit them
+data/
+EEG_data/
+*.edf
+*.edf.seizures
+*-summary.txt
+
+# Notebooks
+.ipynb_checkpoints/
+
+# Editors / OS
+.vscode/
+.idea/
+.DS_Store
+
+# Logs and experiment output
+*.log
+runs/
+lightning_logs/
+wandb/

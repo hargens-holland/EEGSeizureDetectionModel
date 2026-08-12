@@ -1,15 +1,24 @@
+"""Classical ML baselines on flattened EEG windows.
+
+These exist as a comparison point for the CNNs: they show what happens when a
+model without temporal or spectral structure meets a heavily imbalanced dataset.
+
+Example:
+    python src/baseline_models.py --data ./data --model all
+"""
+
 import argparse
 from pathlib import Path
 from typing import Dict, Tuple
 
 import numpy as np
 from sklearn.ensemble import RandomForestClassifier
-from sklearn.metrics import accuracy_score, roc_auc_score, confusion_matrix
 from sklearn.preprocessing import StandardScaler
 from sklearn.svm import SVC
 from sklearn.linear_model import LogisticRegression
 
 from data_loader import CHBMITDataset
+from metrics import compute_metrics
 
 
 SplitData = Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray]
@@ -43,33 +52,6 @@ def prepare_dataset(data_dir: Path, train_ratio: float = 0.7, val_ratio: float =
         X[test_idx],
         y[test_idx],
     )
-
-
-def compute_metrics(
-    y_true: np.ndarray,
-    y_pred: np.ndarray,
-    y_scores: np.ndarray | None = None,
-) -> Dict[str, float | str]:
-    """Compute evaluation metrics for binary classification."""
-    metrics: Dict[str, float | str] = {
-        "accuracy": accuracy_score(y_true, y_pred),
-        "auc": float("nan"),
-        "sensitivity": float("nan"),
-        "specificity": float("nan"),
-    }
-
-    if y_scores is not None and len(np.unique(y_true)) == 2:
-        try:
-            metrics["auc"] = roc_auc_score(y_true, y_scores)
-        except ValueError:
-            metrics["auc"] = float("nan")
-
-    tn, fp, fn, tp = confusion_matrix(y_true, y_pred, labels=[0, 1]).ravel()
-
-    metrics["sensitivity"] = tp / (tp + fn) if (tp + fn) else 0.0
-    metrics["specificity"] = tn / (tn + fp) if (tn + fp) else 0.0
-
-    return metrics
 
 
 def get_prediction_scores(model, X: np.ndarray) -> np.ndarray | None:

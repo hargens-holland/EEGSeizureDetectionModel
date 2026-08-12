@@ -1,114 +1,120 @@
+"""CHB-MIT EEG loading, windowing and labeling.
 
-import os
+Turns multi-hour EDF recordings into fixed-length labeled windows:
+
+    EDF file -> bandpass 0.5-40 Hz -> resample 256 Hz -> 4 s windows (50% overlap)
+    -> per-channel normalization -> (23, 1024) tensor + seizure/non-seizure label
+"""
+
 import numpy as np
 import mne
 import torch
 from torch.utils.data import Dataset, DataLoader
 from pathlib import Path
+from scipy import signal
 
 
 class CHBMITDataset(Dataset):
-    
-    def __init__(self, data_dir, window_size=4, overlap=0.5, target_fs=256, max_patients=None, max_files_per_patient=None, max_windows=None):
+    """Windowed CHB-MIT recordings.
+
+    Expects the standard CHB-MIT layout::
+
+        data_dir/
+            chb01/
+                chb01_01.edf
+                chb01-summary.txt
+            chb02/
+                ...
+
+    The ``max_*`` arguments cap how much is loaded, which keeps development
+    runs tractable — the full dataset is tens of gigabytes.
+    """
+
+    def __init__(self, data_dir, window_size=4, overlap=0.5, target_fs=256,
+                 max_patients=None, max_files_per_patient=None, max_windows=None):
         """
-        Args
-            data_dir: Path to data directory
-            window_size: Window length in seconds
-            overlap: Overlap fraction ( 0 to 1)
-            target_fs: Target sampling frequency
-            max_patients: Optional cap on number of patient folders to load
-            max_files_per_patient: Optional cap on EDF files per patient
-            max_windows: Optional hard cap on total windows across all patients
+        Args:
+            data_dir: Path to the directory of patient folders.
+            window_size: Window length in seconds.
+            overlap: Overlap fraction between consecutive windows (0 to 1).
+            target_fs: Target sampling frequency in Hz.
+            max_patients: Optional cap on number of patient folders to load.
+            max_files_per_patient: Optional cap on EDF files per patient.
+            max_windows: Optional hard cap on total windows across all patients.
         """
         self.data_dir = Path(data_dir)
-        self.window_size = window_size #section of conintuous eeg file (4 seconds)
-        self.overlap = overlap # over lap between windows (0-4, 2-6, 4-8 ...)
-        self.target_fs = target_fs #256 Hz (256 times per second)
-        self.samples_per_window = int(window_size * target_fs) # 4 * 256 
+        self.window_size = window_size
+        self.overlap = overlap
+        self.target_fs = target_fs
+
+        # 4 s * 256 Hz = 1024 samples per window; 50% overlap -> stride of 512.
+        self.samples_per_window = int(window_size * target_fs)
         self.stride = int(self.samples_per_window * (1 - overlap))
-        
+
         self.max_patients = max_patients
         self.max_files_per_patient = max_files_per_patient
         self.max_windows = max_windows
-        
-        # Load data and create index
-        self.windows, self.labels = self._load_all_data()
-    
 
+        self.windows, self.labels = self._load_all_data()
 
     def _load_edf(self, edf_file, seizure_times):
-        """takes edf file and sezizure times 
-           returns 4 second windows labeled with seizure or not
-        """
-        # Read edf file
-        #loads entire recording into memory
+        """Read one EDF recording and cut it into labeled windows."""
         raw = mne.io.read_raw_edf(edf_file, preload=True, verbose=False)
-        
-        # preprocessing
-        raw.filter(0.5, 40., fir_design='firwin', verbose=False) # filters out noise that aren't brain wave frequencies
-        
-        # resample to 256 Hz (some recording sessions use 512 Hz)
-        raw.resample(self.target_fs, verbose=False) 
-        
-        #get data
-        data = raw.get_data() # 23 x num samples (921600 for 1 hour)
+
+        # Drop DC drift and high-frequency noise outside the band of interest.
+        raw.filter(0.5, 40., fir_design='firwin', verbose=False)
+
+        # Some sessions were recorded at 512 Hz; standardize them all.
+        raw.resample(self.target_fs, verbose=False)
+
+        data = raw.get_data()  # (n_channels, n_samples)
         _, n_samples = data.shape
-        
+
         windows = []
         labels = []
-        
-        # Extract windows with overlap 
+
         for start in range(0, n_samples - self.samples_per_window, self.stride):
             end = start + self.samples_per_window
-            window = data[:, start:end]
-            
-            # Normalize window
-            window = window.astype(np.float32, copy=False)
+            window = data[:, start:end].astype(np.float32, copy=False)
 
-            mean = window.mean(axis=1, keepdims=True, dtype=np.float32)
-            window -= mean
+            # Per-channel z-normalization within the window.
+            window -= window.mean(axis=1, keepdims=True, dtype=np.float32)
+            window /= (window.std(axis=1, keepdims=True, dtype=np.float32) + 1e-6)
 
-            std = window.std(axis=1, keepdims=True, dtype=np.float32)
-            window /= (std + 1e-6)
-            
-            # Label window
+            # A window counts as a seizure if it overlaps any annotated onset.
             window_time = start / self.target_fs
             is_seizure = any(
-                seizure_time <= window_time < seizure_time + self.window_size 
-                for seizure_time in seizure_times
+                onset <= window_time < onset + self.window_size
+                for onset in seizure_times
             )
-            
+
             windows.append(window)
             labels.append(1 if is_seizure else 0)
-        
+
         return windows, labels
 
-
-
-
-    #loads edf files and extracts windows 
     def _load_all_data(self):
+        """Walk the patient directories and accumulate every window."""
         windows = []
         labels = []
-        
-        # all folders in data directory (whatever is downloaded in drive)
-        patient_dirs = sorted([d for d in self.data_dir.iterdir() if d.is_dir()])       
-        patient_dirs = patient_dirs[:self.max_patients] if self.max_patients is not None else patient_dirs
+
+        patient_dirs = sorted(d for d in self.data_dir.iterdir() if d.is_dir())
+        if self.max_patients is not None:
+            patient_dirs = patient_dirs[:self.max_patients]
 
         for patient_dir in patient_dirs:
             print(f"Loading {patient_dir.name}...")
 
-            # Parse seizure annotations from summary file
             seizure_info = self._parse_summary(patient_dir)
 
-            # Load each EDF (European data format) file
             edf_files = sorted(patient_dir.glob("*.edf"))
-            edf_files = edf_files[:self.max_files_per_patient] if self.max_files_per_patient is not None else edf_files
+            if self.max_files_per_patient is not None:
+                edf_files = edf_files[:self.max_files_per_patient]
 
             for edf_file in edf_files:
                 file_windows, file_labels = self._load_edf(
                     edf_file,
-                    seizure_info.get(edf_file.name, [])
+                    seizure_info.get(edf_file.name, []),
                 )
                 windows.extend(file_windows)
                 labels.extend(file_labels)
@@ -129,7 +135,8 @@ class CHBMITDataset(Dataset):
         if len(windows) == 0:
             return np.array([]), np.array([])
 
-        # Ensure consistent shape so we can stack
+        # Channel counts vary slightly between recordings; keep only the
+        # dominant shape so the windows can be stacked into one array.
         expected_shape = windows[0].shape
         good_windows, good_labels = [], []
         for w, y in zip(windows, labels):
@@ -143,23 +150,21 @@ class CHBMITDataset(Dataset):
             np.array(good_windows, dtype=np.float32),
             np.array(good_labels, dtype=np.int64),
         )
-        
-        #windows is a tensor (number of 4 second windows, channels (23), number of samples (1024))
-        # label tells whether that window index contains seizure or not
-        # windows [0][0][0] would be the first window of the first of the first sample (some number that represents the wave)
-    
-    
+
     def _parse_summary(self, patient_dir):
-        """Parse seizure times from summary file for labels """
+        """Extract seizure onset times from a patient's summary file.
+
+        Returns a dict mapping EDF filename -> list of onset times in seconds.
+        """
         summary_file = patient_dir / f"{patient_dir.name}-summary.txt"
         seizure_info = {}
-        
+
         if not summary_file.exists():
             return seizure_info
-        
+
         with open(summary_file, 'r') as f:
             lines = f.readlines()
-        
+
         current_file = None
         for line in lines:
             if 'File Name:' in line:
@@ -168,42 +173,99 @@ class CHBMITDataset(Dataset):
             elif 'Seizure Start Time:' in line and current_file:
                 start = int(line.split(':')[1].strip().split()[0])
                 seizure_info[current_file].append(start)
-        
+
         return seizure_info
-    
-    
-    
+
     def __len__(self):
         return len(self.labels)
-    
+
     def __getitem__(self, idx):
         x = torch.FloatTensor(self.windows[idx])
         y = torch.tensor(int(self.labels[idx]), dtype=torch.long)
         return x, y
 
 
+def make_spectrogram(window, nperseg=64, noverlap=32, target_fs=256):
+    """Convert a multi-channel EEG window into a single-channel spectrogram.
+
+    Channels are averaged into one signal before the STFT, so the 2D CNN sees
+    time-frequency structure but not per-channel detail.
+
+    Args:
+        window: Array of shape (n_channels, n_samples), e.g. (23, 1024).
+        nperseg: STFT segment length.
+        noverlap: STFT overlap between segments.
+        target_fs: Sampling frequency in Hz.
+
+    Returns:
+        Array of shape (1, freq_bins, time_bins), min-max scaled to [0, 1].
+    """
+    averaged_signal = np.mean(window, axis=0)
+
+    f, t, Sxx = signal.spectrogram(
+        averaged_signal,
+        fs=target_fs,
+        nperseg=nperseg,
+        noverlap=noverlap,
+        mode='magnitude',
+    )
+
+    # Log scaling compresses the large dynamic range of EEG power.
+    Sxx = np.log1p(Sxx)
+
+    Sxx_min, Sxx_max = Sxx.min(), Sxx.max()
+    if Sxx_max > Sxx_min:
+        Sxx = (Sxx - Sxx_min) / (Sxx_max - Sxx_min)
+
+    return Sxx[np.newaxis, :, :].astype(np.float32)
+
+
+class SpectrogramDataset(Dataset):
+    """Wraps a CHBMITDataset and yields spectrograms instead of raw windows."""
+
+    def __init__(self, base_dataset, nperseg=64, noverlap=32):
+        self.base_dataset = base_dataset
+        self.nperseg = nperseg
+        self.noverlap = noverlap
+        self.target_fs = base_dataset.target_fs
+
+    def __len__(self):
+        return len(self.base_dataset)
+
+    def __getitem__(self, idx):
+        window, label = self.base_dataset[idx]
+
+        if isinstance(window, torch.Tensor):
+            window = window.numpy()
+
+        spectrogram = make_spectrogram(
+            window,
+            nperseg=self.nperseg,
+            noverlap=self.noverlap,
+            target_fs=self.target_fs,
+        )
+
+        return torch.FloatTensor(spectrogram), torch.tensor(int(label), dtype=torch.long)
+
+
 def get_dataloaders(data_dir, batch_size=32, train_ratio=0.7, val_ratio=0.15):
-    """Create train/val/test dataloaders"""
+    """Create train/val/test dataloaders over the raw windows."""
     dataset = CHBMITDataset(data_dir)
-    
+
     n = len(dataset)
     if n == 0:
         return None, None, None
+
     indices = np.random.permutation(n)
     train_end = int(train_ratio * n)
     val_end = int((train_ratio + val_ratio) * n)
-    
-    train_indices = indices[:train_end]
-    val_indices = indices[train_end:val_end]
-    test_indices = indices[val_end:]
-    
-    train_dataset = torch.utils.data.Subset(dataset, train_indices)
-    val_dataset = torch.utils.data.Subset(dataset, val_indices)
-    test_dataset = torch.utils.data.Subset(dataset, test_indices)
-    
+
+    train_dataset = torch.utils.data.Subset(dataset, indices[:train_end])
+    val_dataset = torch.utils.data.Subset(dataset, indices[train_end:val_end])
+    test_dataset = torch.utils.data.Subset(dataset, indices[val_end:])
+
     train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True, num_workers=0)
     val_loader = DataLoader(val_dataset, batch_size=batch_size, shuffle=False, num_workers=0)
     test_loader = DataLoader(test_dataset, batch_size=batch_size, shuffle=False, num_workers=0)
-    
-    return train_loader, val_loader, test_loader
 
+    return train_loader, val_loader, test_loader
