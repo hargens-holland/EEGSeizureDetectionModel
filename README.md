@@ -115,7 +115,7 @@ python -m venv .venv && source .venv/bin/activate
 pip install -r requirements.txt
 ```
 
-Download the [CHB-MIT Scalp EEG Database](https://physionet.org/content/chbmit/1.0.0/) and arrange it as:
+Download the [CHB-MIT Scalp EEG Database](https://physionet.org/content/chbmit/1.0.0/) — PhysioNet is the canonical source; this project used a Kaggle mirror of it — and arrange it as:
 
 ```
 data/
@@ -156,12 +156,12 @@ ECE 539 (Introduction to Artificial Neural Networks), University of Wisconsin–
 
 | | |
 |---|---|
-| **Stephen Bail** | 1D CNN and 2D CNN models, method and evaluation, literature review |
-| **Kushal Mishra** | Dataset description, baseline model training |
-| **Donovan Johnson** | Project plan |
-| **Holland Hargens** | Final report and presentation; this repository's cleanup, documentation, and results analysis |
+| **Holland Hargens** | 2D CNN architecture and spectrogram pipeline; final report and presentation; this repository's restructuring, documentation, and threshold analysis |
+| **Stephen Bail** | 1D CNN architecture; revisions to the 2D CNN training script; evaluation and literature review |
+| **Kushal Mishra** | Classical baselines (logistic regression, SVM, random forest) |
+| **Donovan Johnson** | EDF data loader and windowing pipeline |
 
-The model architectures and training code are the team's work. The repository structure, README, and the threshold analysis above are mine.
+This was a team project and the commit history reflects it. My own contributions are the 2D CNN and its spectrogram preprocessing, plus the analysis and packaging in this repository.
 
 ## References
 
