@@ -16,7 +16,8 @@ from torch.utils.data import DataLoader, Subset
 
 from data_loader import CHBMITDataset, SpectrogramDataset
 from models import CNN2D
-from train_utils import random_split_indices, train_epoch, validate_epoch
+from train_utils import (describe_split, report_operating_point, split_indices,
+                         train_epoch, validate_epoch)
 
 
 def parse_args():
@@ -34,6 +35,20 @@ def parse_args():
     parser.add_argument("--max-patients", type=int, default=None)
     parser.add_argument("--max-files-per-patient", type=int, default=None)
     parser.add_argument("--max-windows", type=int, default=None)
+
+    parser.add_argument(
+        "--split",
+        choices=["recording", "window"],
+        default="recording",
+        help="'recording' holds out whole EDF files (default). 'window' is the "
+             "original leaky random-window split, kept for comparison.",
+    )
+    parser.add_argument(
+        "--fa-budget",
+        type=float,
+        default=5.0,
+        help="Max false alarms per hour when choosing the threshold on validation",
+    )
 
     return parser.parse_args()
 
@@ -69,10 +84,11 @@ def main():
     print("Creating spectrogram dataset...")
     dataset = SpectrogramDataset(base_dataset, nperseg=args.nperseg, noverlap=args.noverlap)
 
-    train_idx, val_idx, test_idx = random_split_indices(len(dataset), args.seed)
-    print(f"Train samples: {len(train_idx)}")
-    print(f"Val samples:   {len(val_idx)}")
-    print(f"Test samples:  {len(test_idx)}")
+    train_idx, val_idx, test_idx = split_indices(base_dataset, args.seed, args.split)
+    print(f"\nSplit strategy: {args.split}")
+    describe_split("Train", base_dataset, train_idx)
+    describe_split("Val", base_dataset, val_idx)
+    describe_split("Test", base_dataset, test_idx)
 
     pin = torch.cuda.is_available()
     train_loader = DataLoader(Subset(dataset, train_idx), batch_size=args.batch_size,
@@ -134,12 +150,11 @@ def main():
     print("Evaluating on test set...")
     print("=" * 60)
 
-    _, test_metrics = validate_epoch(model, test_loader, criterion, device)
-
-    print(f"Test Accuracy:    {test_metrics['accuracy']:.4f}")
-    print(f"Test Sensitivity: {test_metrics['sensitivity']:.4f}")
-    print(f"Test Specificity: {test_metrics['specificity']:.4f}")
-    print(f"Test AUC:         {test_metrics['auc']:.4f}")
+    report_operating_point(
+        model, val_loader, test_loader, device,
+        stride_seconds=base_dataset.stride_seconds,
+        fa_budget=args.fa_budget,
+    )
 
     print("\nTraining complete!")
 

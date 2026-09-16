@@ -3,11 +3,12 @@
 The training scripts classify with ``argmax``, which is equivalent to a fixed
 0.5 cutoff on the seizure probability. Under heavy class imbalance that cutoff
 is often never crossed, giving sensitivity 0.000 even when the model ranks
-seizure windows well (high AUC). This script evaluates every threshold instead
-and reports the sensitivity / false-alarm tradeoff, so an operating point can be
-chosen deliberately.
+seizure windows well (high AUC).
 
-Requires a trained checkpoint, which is not committed to this repository.
+This script prints the full sensitivity / false-alarm curve on the test split,
+but the operating point it recommends is chosen on the *validation* split —
+tuning a threshold on test and then reporting test numbers is a form of
+test-set leakage.
 
 Example:
     python src/threshold_sweep.py --data ./data --checkpoint cnn2d.pth --model 2d
@@ -24,7 +25,8 @@ from torch.utils.data import DataLoader, Subset
 
 from data_loader import CHBMITDataset, SpectrogramDataset
 from models import CNN1D, CNN2D
-from train_utils import random_split_indices
+from train_utils import (choose_threshold, collect_scores, describe_split,
+                         evaluate_at_threshold, split_indices)
 
 
 def parse_args():
@@ -34,6 +36,10 @@ def parse_args():
     parser.add_argument("--model", choices=["1d", "2d"], required=True, help="Which architecture")
     parser.add_argument("--batch-size", type=int, default=64)
     parser.add_argument("--seed", type=int, default=42, help="Must match the training seed")
+    parser.add_argument("--split", choices=["recording", "window"], default="recording",
+                        help="Must match the split used in training")
+    parser.add_argument("--fa-budget", type=float, default=5.0,
+                        help="Max false alarms per hour when choosing the threshold on validation")
     parser.add_argument("--steps", type=int, default=99, help="Number of thresholds to try")
     parser.add_argument("--out", type=Path, default=None, help="Optional CSV output path")
 
@@ -55,47 +61,6 @@ def load_model(kind, checkpoint_path, device):
     return model.to(device).eval()
 
 
-def collect_scores(model, loader, device):
-    """Return (labels, seizure-class probabilities) over the whole loader."""
-    labels, scores = [], []
-
-    with torch.no_grad():
-        for x, y in loader:
-            probs = torch.softmax(model(x.to(device)), dim=1)[:, 1]
-            scores.extend(probs.cpu().numpy())
-            labels.extend(y.numpy())
-
-    return np.array(labels), np.array(scores)
-
-
-def sweep(labels, scores, thresholds, stride_seconds):
-    """Evaluate every threshold. Returns a list of per-threshold metric dicts."""
-    n_pos = int((labels == 1).sum())
-    n_neg = int((labels == 0).sum())
-
-    # Each window advances the recording by `stride` seconds, so the test split
-    # represents this many hours of EEG.
-    hours = len(labels) * stride_seconds / 3600.0
-
-    rows = []
-    for t in thresholds:
-        pred = (scores >= t).astype(int)
-
-        tp = int(((pred == 1) & (labels == 1)).sum())
-        fp = int(((pred == 1) & (labels == 0)).sum())
-
-        rows.append({
-            "threshold": t,
-            "sensitivity": tp / n_pos if n_pos else 0.0,
-            "specificity": (n_neg - fp) / n_neg if n_neg else 0.0,
-            "false_alarms_per_hour": fp / hours if hours else float("nan"),
-            "tp": tp,
-            "fp": fp,
-        })
-
-    return rows
-
-
 def main():
     args = parse_args()
 
@@ -114,45 +79,45 @@ def main():
 
     dataset = base_dataset if args.model == "1d" else SpectrogramDataset(base_dataset)
 
-    # Reuse the training split so the test set is genuinely held out.
-    _, _, test_idx = random_split_indices(len(dataset), args.seed)
+    # Reuse the training split (same seed and strategy) so test stays held out.
+    _, val_idx, test_idx = split_indices(base_dataset, args.seed, args.split)
+    describe_split("Val", base_dataset, val_idx)
+    describe_split("Test", base_dataset, test_idx)
+
+    val_loader = DataLoader(Subset(dataset, val_idx), batch_size=args.batch_size, shuffle=False)
     test_loader = DataLoader(Subset(dataset, test_idx), batch_size=args.batch_size, shuffle=False)
 
     model = load_model(args.model, args.checkpoint, device)
-    labels, scores = collect_scores(model, test_loader, device)
+    val_labels, val_scores = collect_scores(model, val_loader, device)
+    test_labels, test_scores = collect_scores(model, test_loader, device)
 
-    n_pos = int((labels == 1).sum())
-    print(f"\nTest windows: {len(labels)}  (seizure: {n_pos}, non-seizure: {len(labels) - n_pos})")
-    if n_pos == 0:
+    if (test_labels == 1).sum() == 0:
         print("ERROR: No seizure windows in the test split — sensitivity is undefined.")
         return
 
-    print(f"AUC: {roc_auc_score(labels, scores):.4f}")
+    print(f"\nTest AUC: {roc_auc_score(test_labels, test_scores):.4f}")
 
-    stride_seconds = base_dataset.window_size * (1 - base_dataset.overlap)
+    stride = base_dataset.stride_seconds
     thresholds = np.linspace(0, 1, args.steps + 2)[1:-1]
-    rows = sweep(labels, scores, thresholds, stride_seconds)
+    rows = [evaluate_at_threshold(test_labels, test_scores, t, stride) for t in thresholds]
 
-    print(f"\n{'Thresh':>8}  {'Sens':>7}  {'Spec':>7}  {'FA/hr':>9}")
+    print(f"\nTest-split curve:")
+    print(f"{'Thresh':>8}  {'Sens':>7}  {'Spec':>7}  {'FA/hr':>9}")
     print("-" * 38)
     for r in rows[::max(len(rows) // 20, 1)]:
         print(f"{r['threshold']:>8.3f}  {r['sensitivity']:>7.3f}  "
               f"{r['specificity']:>7.3f}  {r['false_alarms_per_hour']:>9.2f}")
 
-    # A reasonable default operating point: the highest sensitivity reachable
-    # while keeping false alarms tolerable for a monitoring setting.
-    for budget in (1.0, 5.0, 10.0):
-        viable = [r for r in rows if r["false_alarms_per_hour"] <= budget]
-        if viable:
-            best = max(viable, key=lambda r: r["sensitivity"])
-            print(f"\nAt <= {budget:g} false alarms/hour: sensitivity {best['sensitivity']:.3f} "
-                  f"at threshold {best['threshold']:.3f}")
-        else:
-            print(f"\nAt <= {budget:g} false alarms/hour: no threshold qualifies")
+    threshold, rule = choose_threshold(val_labels, val_scores, stride, args.fa_budget)
+    chosen = evaluate_at_threshold(test_labels, test_scores, threshold, stride)
+    print(f"\nOperating point chosen on validation ({rule}): threshold {threshold:.3f}")
+    print(f"  Test sensitivity {chosen['sensitivity']:.3f}  specificity {chosen['specificity']:.3f}  "
+          f"FA/hr {chosen['false_alarms_per_hour']:.2f}")
 
     if args.out:
+        fields = ["threshold", "sensitivity", "specificity", "false_alarms_per_hour", "accuracy"]
         with open(args.out, "w", newline="") as f:
-            writer = csv.DictWriter(f, fieldnames=list(rows[0].keys()))
+            writer = csv.DictWriter(f, fieldnames=fields, extrasaction="ignore")
             writer.writeheader()
             writer.writerows(rows)
         print(f"\nWrote {args.out}")

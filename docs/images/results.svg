@@ -1,6 +1,6 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 780 400" width="780" height="400" font-family='system-ui,-apple-system,"Segoe UI",sans-serif' role="img" aria-label="Test AUC versus sensitivity for five seizure detection models. AUC ranges from 0.506 to 0.999 while sensitivity is 0.000 for every model.">
 <text x="24" y="30" font-size="16" font-weight="600" fill="#0b0b0b">Every model ranks well. None of them ever fires.</text>
-<text x="24" y="50" font-size="12.5" fill="#52514e">CHB-MIT test split &#183; AUC measures ranking, sensitivity measures actual seizure detections</text>
+<text x="24" y="50" font-size="12.5" fill="#52514e">CHB-MIT, original random-window split (leaky; see README) &#183; AUC measures ranking, sensitivity measures detections</text>
 <rect x="24" y="62" width="10" height="10" rx="2" fill="#2a78d6"/>
 <text x="40" y="71" font-size="12" fill="#52514e">AUC</text>
 <rect x="82" y="62" width="10" height="10" rx="2" fill="#eb6834"/>

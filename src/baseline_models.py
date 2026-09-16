@@ -3,6 +3,9 @@
 These exist as a comparison point for the CNNs: they show what happens when a
 model without temporal or spectral structure meets a heavily imbalanced dataset.
 
+Uses the same recording-level split and validation-chosen threshold as the CNN
+scripts, so the numbers are directly comparable.
+
 Example:
     python src/baseline_models.py --data ./data --model all
 """
@@ -19,24 +22,23 @@ from sklearn.linear_model import LogisticRegression
 
 from data_loader import CHBMITDataset
 from metrics import compute_metrics
-from train_utils import random_split_indices
+from train_utils import choose_threshold, describe_split, evaluate_at_threshold, split_indices
 
 
 SplitData = Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray]
 
 
-def prepare_dataset(data_dir: Path, train_ratio: float = 0.7, val_ratio: float = 0.15, seed: int = 42) -> SplitData:
-    """Load windows and create flattened train/val/test splits."""
-    dataset = CHBMITDataset(data_dir)
-
+def prepare_dataset(dataset: CHBMITDataset, split: str, seed: int) -> SplitData:
+    """Flatten windows and partition them with the shared split helper."""
     X = dataset.windows.astype(np.float32)
     y = dataset.labels.astype(np.int64)
+    X = X.reshape(len(y), -1)
 
-    n_samples = len(y)
-    X = X.reshape(n_samples, -1)
-
-    # Same split helper as the CNN scripts, so all five models share a test set.
-    train_idx, val_idx, test_idx = random_split_indices(n_samples, seed, train_ratio, val_ratio)
+    train_idx, val_idx, test_idx = split_indices(dataset, seed, split)
+    print(f"\nSplit strategy: {split}")
+    describe_split("Train", dataset, train_idx)
+    describe_split("Val", dataset, val_idx)
+    describe_split("Test", dataset, test_idx)
 
     return (
         X[train_idx],
@@ -62,8 +64,10 @@ def train_and_evaluate(
     model,
     use_scaler: bool,
     splits: SplitData,
+    stride_seconds: float,
+    fa_budget: float,
 ) -> Dict[str, float | str]:
-    """Fit the model and evaluate on validation and test splits."""
+    """Fit the model, choose a threshold on val, and evaluate on test."""
     X_train, y_train, X_val, y_val, X_test, y_test = splits
 
     scaler = StandardScaler() if use_scaler else None
@@ -75,25 +79,27 @@ def train_and_evaluate(
 
     model.fit(X_train, y_train)
 
-    y_val_pred = model.predict(X_val)
-    y_test_pred = model.predict(X_test)
-
     val_scores = get_prediction_scores(model, X_val)
     test_scores = get_prediction_scores(model, X_test)
 
-    val_metrics = compute_metrics(y_val, y_val_pred, val_scores)
-    test_metrics = compute_metrics(y_test, y_test_pred, test_scores)
+    # Default operating point: whatever ``predict`` does (0.5 on probabilities).
+    default = compute_metrics(y_test, model.predict(X_test), test_scores)
+
+    # Chosen operating point: threshold picked on validation, applied to test.
+    threshold, rule = choose_threshold(y_val, val_scores, stride_seconds, fa_budget)
+    chosen = evaluate_at_threshold(y_test, test_scores, threshold, stride_seconds)
 
     return {
         "model": name,
-        "val_accuracy": val_metrics["accuracy"],
-        "val_auc": val_metrics["auc"],
-        "val_sensitivity": val_metrics["sensitivity"],
-        "val_specificity": val_metrics["specificity"],
-        "test_accuracy": test_metrics["accuracy"],
-        "test_auc": test_metrics["auc"],
-        "test_sensitivity": test_metrics["sensitivity"],
-        "test_specificity": test_metrics["specificity"],
+        "test_auc": chosen["auc"],
+        "default_sensitivity": default["sensitivity"],
+        "default_specificity": default["specificity"],
+        "threshold": threshold,
+        "threshold_rule": rule,
+        "sensitivity": chosen["sensitivity"],
+        "specificity": chosen["specificity"],
+        "false_alarms_per_hour": chosen["false_alarms_per_hour"],
+        "accuracy": chosen["accuracy"],
     }
 
 
@@ -144,9 +150,26 @@ def main():
         required=True,
         help="Path to root directory containing dataset",
     )
-    parser.add_argument("--train-split", type=float, default=0.7)
-    parser.add_argument("--val-split", type=float, default=0.15)
     parser.add_argument("--seed", type=int, default=42)
+
+    # Caps for keeping development runs tractable on the full dataset.
+    parser.add_argument("--max-patients", type=int, default=None)
+    parser.add_argument("--max-files-per-patient", type=int, default=None)
+    parser.add_argument("--max-windows", type=int, default=None)
+
+    parser.add_argument(
+        "--split",
+        choices=["recording", "window"],
+        default="recording",
+        help="'recording' holds out whole EDF files (default). 'window' is the "
+             "original leaky random-window split, kept for comparison.",
+    )
+    parser.add_argument(
+        "--fa-budget",
+        type=float,
+        default=5.0,
+        help="Max false alarms per hour when choosing the threshold on validation",
+    )
     # Model selection
     parser.add_argument(
         "--model",
@@ -156,7 +179,17 @@ def main():
     )
     args = parser.parse_args()
 
-    splits = prepare_dataset(args.data, args.train_split, args.val_split, args.seed)
+    dataset = CHBMITDataset(
+        args.data,
+        max_patients=args.max_patients,
+        max_files_per_patient=args.max_files_per_patient,
+        max_windows=args.max_windows,
+    )
+    if len(dataset) == 0:
+        print("ERROR: Dataset loaded 0 windows.")
+        return
+
+    splits = prepare_dataset(dataset, args.split, args.seed)
     models = build_models()
 
     selected_models = (
@@ -166,20 +199,16 @@ def main():
     )
 
     for name, (model, use_scaler) in selected_models:
-        print(f"Training {name} baseline...")
-        model_results = train_and_evaluate(name, model, use_scaler, splits)
+        print(f"\nTraining {name} baseline...")
+        r = train_and_evaluate(name, model, use_scaler, splits, dataset.stride_seconds, args.fa_budget)
 
-        print(
-            f"{name} | "
-            f"Val Acc: {model_results['val_accuracy']:.3f}, "
-            f"Val AUC: {model_results['val_auc']:.3f}, "
-            f"Val Sensitivity: {model_results['val_sensitivity']:.3f}, "
-            f"Val Specificity: {model_results['val_specificity']:.3f} | "
-            f"Test Acc: {model_results['test_accuracy']:.3f}, "
-            f"Test AUC: {model_results['test_auc']:.3f}, "
-            f"Test Sensitivity: {model_results['test_sensitivity']:.3f}, "
-            f"Test Specificity: {model_results['test_specificity']:.3f}"
-        )
+        print(f"{name}")
+        print(f"  Test AUC:                {r['test_auc']:.4f}")
+        print(f"  Default threshold:       Sensitivity {r['default_sensitivity']:.3f}  "
+              f"Specificity {r['default_specificity']:.3f}")
+        print(f"  Threshold {r['threshold']:.3f} ({r['threshold_rule']}):")
+        print(f"    Sensitivity {r['sensitivity']:.3f}  Specificity {r['specificity']:.3f}  "
+              f"FA/hr {r['false_alarms_per_hour']:.2f}  Accuracy {r['accuracy']:.4f}")
 
 
 if __name__ == "__main__":

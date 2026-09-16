@@ -1,6 +1,6 @@
 # EEG Seizure Detection
 
-Detecting epileptic seizures from raw multi-channel EEG recordings, and a study of why a model can score 99.9% accuracy while detecting exactly zero seizures.
+Detecting epileptic seizures from raw multi-channel EEG recordings — and a study of why a model can score 99.9% accuracy while detecting exactly zero seizures.
 
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="docs/images/results-dark.svg">
@@ -28,7 +28,7 @@ flowchart LR
 
 ## Results
 
-Test-set performance across all five models:
+Test-set performance across all five models, from the original course run. These numbers were produced under a **random window-level split** — see [Evaluation](#evaluation) for why that inflates AUC, and why the repository now defaults to a recording-level split.
 
 | Model | Accuracy | Sensitivity | Specificity | AUC |
 |---|---|---|---|---|
@@ -42,38 +42,40 @@ Test-set performance across all five models:
 
 ### Why accuracy is the wrong headline metric
 
-A seizure occupies roughly 3–6% of a recording at most — and, because of the labeling bug described below, the positive class in these runs was smaller still. A model that outputs "no seizure" unconditionally therefore scores near-perfect accuracy while being clinically worthless. That is precisely what every model in the table above does: accuracy ≥ 0.996, specificity 1.000, and sensitivity **0.000** — not a single seizure window was ever predicted positive.
+A seizure occupies roughly 3–6% of a recording at most, and the positive class in these runs was smaller still (see [What revisiting the project turned up](#what-revisiting-the-project-turned-up)). A model that outputs "no seizure" unconditionally therefore scores near-perfect accuracy while being clinically worthless. That is precisely what every model in the table above does: accuracy ≥ 0.996, specificity 1.000, and sensitivity **0.000** — not a single seizure window was ever predicted positive.
 
 Accuracy hides this completely. Sensitivity exposes it in one number.
 
-### The interesting part: high AUC, zero sensitivity
+### High AUC, zero sensitivity
 
 The baselines and the CNNs fail the same way at the decision layer, but they are not equivalent underneath.
 
 - Baselines sit at **AUC 0.506–0.615** — barely better than a coin flip. They learned close to nothing.
-- The CNNs reach **AUC 0.976 and 0.999**. They learned to rank seizure windows above non-seizure ones almost perfectly.
+- The CNNs reach **AUC 0.976 and 0.999**. They learned to rank seizure windows above non-seizure ones almost perfectly — *on this split*.
 
-AUC is threshold-free: it asks "is a seizure window scored higher than a non-seizure window?", never "does this score cross 0.5 and become a positive prediction?" So a model can order the data nearly perfectly and still never cross the threshold. The CNNs learned a genuinely discriminative representation; what failed was the operating point, not the features.
+AUC is threshold-free: it asks "is a seizure window scored higher than a non-seizure window?", never "does this score cross 0.5 and become a positive prediction?" So a model can order the data nearly perfectly and still never cross the threshold. The CNNs learned a discriminative representation; what failed was the operating point, not the features.
 
-The fix is threshold selection, not a new architecture — sweep the decision threshold, pick the point on the ROC curve that hits a target sensitivity, and accept the false-alarm rate that comes with it. In seizure detection you would tolerate a substantial false-alarm rate to get sensitivity meaningfully above zero, because a missed seizure costs far more than a spurious alert. Class-weighted loss (implemented via `--use-class-weights`) and focal loss attack the same problem during training rather than after it.
+The fix is threshold selection, not a new architecture — choose the decision threshold on a validation split to hit a target sensitivity, and accept the false-alarm rate that comes with it. In seizure detection you would tolerate a substantial false-alarm rate to get sensitivity meaningfully above zero, because a missed seizure costs far more than a spurious alert. That is what the evaluation protocol below does.
 
-### Post-mortem: a labeling bug made the positive class rarer than it should have been
+## Evaluation
 
-While packaging this repository I found that the original data loader only read each seizure's *onset* from `chbNN-summary.txt` and labeled a window positive if its start fell within four seconds of that onset. Seizure *end* times were never parsed. Every seizure — whether it lasted 10 seconds or 3 minutes — produced at most two positive windows.
+The scripts in this repository evaluate the way a seizure-detection paper would, and every entry point — both CNNs, the baselines, and the threshold sweep — shares the same code path in [`src/train_utils.py`](src/train_utils.py).
 
-CHB-MIT seizures average around 60 seconds, so the true positive rate at 4 s / 50 % overlap should be roughly 30 windows per seizure, not two. The loader was under-labeling positives by an order of magnitude, which made an already severe imbalance far worse and is a likely contributor to the zero-sensitivity result. The bug is fixed in [`src/data_loader.py`](src/data_loader.py): the parser now captures `(onset, end)` intervals, and a window is positive if any part of it overlaps any interval. The numbers in the table above were produced *before* that fix and have not been re-run.
+**Recording-level split.** Windows overlap by 50%, so any two neighbours share two seconds of identical signal. A random split over windows puts a test window's neighbour in training more often than not; the model is then partly scored on how well it recognises near-copies of what it has already seen. The default split (`--split recording`) instead assigns each EDF file wholesale to train, val, or test, so no signal in the test set has been seen during training. Recordings that contain a seizure are rare — a handful per patient — so they are allocated separately from seizure-free recordings, guaranteeing every split has positive windows. The original window-level split is kept as `--split window` so the leaky result can be reproduced and compared.
 
-> **On the AUC figures.** Train/val/test splits are random over 4-second windows with 50% overlap, so a window and its overlapping neighbour — sharing two seconds of identical signal — can land on opposite sides of the split. The reported AUC is optimistic as a result, and a patient-independent split would be the honest evaluation. See [Limitations](#limitations).
+**Threshold chosen on validation, reported on test.** After training, the script sweeps the decision threshold on the *validation* split and picks the one with the highest sensitivity whose false-alarm rate stays within a budget (`--fa-budget`, default 5 per hour; falls back to Youden's J if nothing qualifies). It then reports test sensitivity, specificity, false alarms per hour, and AUC at that fixed threshold — alongside the same numbers at the default 0.5, so the effect of choosing an operating point is visible in one place. Tuning the threshold on test and then reporting test numbers would be a second, subtler form of leakage.
 
-### Threshold sweep (planned)
+**Checkpoint selection on validation AUC, not accuracy.** Accuracy is ~1.0 for a model that never predicts a seizure, so it cannot distinguish a good epoch from a bad one.
 
-The CNNs' high AUC alongside zero sensitivity points to a threshold-selection problem rather than a modeling one. The next step is to sweep the decision threshold across the test set and report the sensitivity / false-alarms-per-hour tradeoff, then select an operating point deliberately rather than inheriting `argmax`'s implicit 0.5.
+[`src/threshold_sweep.py`](src/threshold_sweep.py) runs the same selection over an existing checkpoint and prints the full sensitivity / false-alarm curve, for choosing a different budget without retraining.
 
-[`src/threshold_sweep.py`](src/threshold_sweep.py) implements this and runs in minutes on an existing checkpoint — no retraining required. It has not yet been run: the trained weights were never committed to this repository and the original training runs were not preserved.
+## What revisiting the project turned up
 
-```bash
-python src/threshold_sweep.py --data ./data --checkpoint cnn2d.pth --model 2d
-```
+Two problems surfaced when I came back to package this repository. Both are fixed; both are worth knowing about because the results table above predates them.
+
+**Seizure windows were under-labeled by roughly 10×.** The original loader read each seizure's *onset* from `chbNN-summary.txt` and labeled a window positive if its start fell within four seconds of that onset. Seizure *end* times were never parsed, so every seizure — whether it lasted 10 seconds or 3 minutes — produced at most two positive windows. CHB-MIT seizures average around a minute, which at 4 s / 50% overlap should be about 30 positive windows each. The loader now captures `(onset, end)` intervals and labels a window positive if any part of it overlaps any interval. This made an already severe imbalance far worse and is a likely contributor to the zero-sensitivity result.
+
+**The split leaked.** As described under [Evaluation](#evaluation), the course results used a random window-level split. The 0.976 and 0.999 AUCs are best read as "the CNNs can separate seizure windows from their own near-duplicates", not as a generalisation claim. The recording-level split is now the default.
 
 ## How it works
 
@@ -98,21 +100,20 @@ Three approaches on the identical `(23, 1024)` window:
 ### Key decisions
 
 - **Global average pooling instead of flatten-then-dense** in both CNNs, keeping the classifier head independent of input length and cutting parameters sharply.
-- **Checkpoint selection on validation AUC, not accuracy.** Accuracy is ~1.0 for a model that never predicts a seizure, so it cannot distinguish a good epoch from a bad one. AUC can.
 - **Per-window rather than per-recording normalization**, so the model is robust to inter-session amplitude drift.
 
 ## Repository structure
 
 ```
 src/
-  data_loader.py     CHB-MIT EDF loading, windowing, labeling, spectrograms
+  data_loader.py     CHB-MIT EDF loading, windowing, interval labeling, spectrograms
   models.py          CNN1D and CNN2D architectures
-  metrics.py         Shared accuracy / sensitivity / specificity / AUC
-  train_utils.py     Shared train and validation loops, split helper
+  metrics.py         Accuracy / sensitivity / specificity / AUC
+  train_utils.py     Recording-level split, threshold selection, train/val loops
   train_1dcnn.py     1D CNN training entry point
   train_cnn2d.py     2D CNN training entry point
   baseline_models.py Logistic Regression / SVM / Random Forest baselines
-  threshold_sweep.py Decision-threshold sweep over a trained checkpoint
+  threshold_sweep.py Sensitivity / false-alarm curve over a trained checkpoint
 docs/
   final-report.pdf   Written report
   presentation.pdf   Slide deck
@@ -146,30 +147,33 @@ data/
     ...
 ```
 
-The full dataset is roughly 40 GB. The `--max-*` flags cap how much gets loaded, which is how you run this on a laptop:
+The full dataset is roughly 40 GB. The `--max-*` flags cap how much gets loaded, which is how you run this on a laptop. Two patients is enough for a recording-level evaluation (chb01 and chb02 together have ten seizure recordings); it is not enough for a patient-independent one.
 
 ```bash
-# 1D CNN on a small subset, with class-weighted loss
-python src/train_1dcnn.py --data ./data --epochs 10 \
-    --max-patients 2 --max-windows 5000 --use-class-weights
-
-# 2D CNN on spectrograms
+# 2D CNN on spectrograms, recording-level split, threshold chosen on validation
 python src/train_cnn2d.py --data ./data --epochs 30 --max-patients 2
 
-# Classical baselines
-python src/baseline_models.py --data ./data --model all
+# 1D CNN with class-weighted loss
+python src/train_1dcnn.py --data ./data --epochs 10 --max-patients 2 --use-class-weights
+
+# Classical baselines on the same split
+python src/baseline_models.py --data ./data --max-patients 2 --model random_forest
+
+# Reproduce the original leaky evaluation for comparison
+python src/train_cnn2d.py --data ./data --epochs 30 --max-patients 2 --split window
+
+# Re-examine a saved checkpoint at a different false-alarm budget
+python src/threshold_sweep.py --data ./data --checkpoint cnn2d.pth --model 2d --fa-budget 2
 ```
 
-Each training script writes its best checkpoint to `cnn1d.pth` / `cnn2d.pth` (gitignored) and prints test accuracy, sensitivity, specificity, and AUC.
+Each training script writes its best checkpoint to `cnn1d.pth` / `cnn2d.pth` (gitignored) and prints test AUC, then sensitivity / specificity / false alarms per hour at both the default threshold and the validation-chosen one.
 
 ## Limitations
 
-- **Splits are random over overlapping windows, not patient-independent.** Overlapping neighbours can straddle the train/test boundary, which inflates the reported AUC. A patient-independent split — hold out whole patients — is the correct evaluation and would produce lower, more trustworthy numbers.
-- **No model achieves non-zero sensitivity at the default threshold.** No threshold sweep was run, so the usable operating point of the CNNs is unmeasured.
-- **Trained on a subset.** Compute limits meant training on a small number of patients rather than all 23, and seizure morphology varies enormously between individuals.
-- **Cross-patient generalization is untested and is the central open problem** in this task.
-- **The reported results predate the labeling fix.** The loader that produced the table above under-labeled seizure windows (see the [post-mortem](#post-mortem-a-labeling-bug-made-the-positive-class-rarer-than-it-should-have-been)). Rerunning with the corrected labels is the first thing to do before trusting any number here.
-- **No trained checkpoint is committed to this repository.** The metrics above are reproduced from the project report; the training runs that produced them were not preserved.
+- **The results table is from the course run**, under the window-level split and the original labels. It is kept because it is the result the project was graded on and because the accuracy-vs-sensitivity story it tells holds regardless. Numbers from the current recording-level protocol will be lower and more trustworthy.
+- **Cross-patient generalisation is untested.** The recording-level split holds out files within patients, which is the standard patient-specific CHB-MIT evaluation. Holding out entire patients is the stronger claim, needs many more patients than a laptop run loads, and is the central open problem in this task — seizure morphology varies enormously between individuals.
+- **Trained on a subset.** Compute limits meant training on a small number of patients rather than all 23.
+- **No trained checkpoint is committed.** The metrics above are reproduced from the project report; the training runs that produced them were not preserved.
 
 ## Credits
 
@@ -177,12 +181,12 @@ ECE 539 (Introduction to Artificial Neural Networks), University of Wisconsin–
 
 | | |
 |---|---|
-| **Holland Hargens** | 2D CNN architecture and spectrogram pipeline; final report and presentation; this repository's restructuring, documentation, threshold analysis, and the labeling fix |
+| **Holland Hargens** | 2D CNN architecture and spectrogram pipeline; final report and presentation; this repository's restructuring, documentation, evaluation protocol (recording-level split, threshold selection), and the labeling fix |
 | **Stephen Bail** | 1D CNN architecture; revisions to the 2D CNN training script; evaluation and literature review |
 | **Kushal Mishra** | Classical baselines (logistic regression, SVM, random forest) |
 | **Donovan Johnson** | EDF data loader and windowing pipeline |
 
-This was a team project and the commit history reflects it. My own contributions are the 2D CNN and its spectrogram preprocessing, plus the analysis and packaging in this repository.
+This was a team project and the commit history reflects it. My own contributions are the 2D CNN and its spectrogram preprocessing, plus the analysis, evaluation protocol, and packaging in this repository.
 
 ## References
 

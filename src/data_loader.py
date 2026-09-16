@@ -4,6 +4,9 @@ Turns multi-hour EDF recordings into fixed-length labeled windows:
 
     EDF file -> bandpass 0.5-40 Hz -> resample 256 Hz -> 4 s windows (50% overlap)
     -> per-channel normalization -> (23, 1024) tensor + seizure/non-seizure label
+
+Every window also remembers which recording it came from, so splits can be
+made at the recording level instead of the window level (see train_utils).
 """
 
 import numpy as np
@@ -55,7 +58,11 @@ class CHBMITDataset(Dataset):
         self.max_files_per_patient = max_files_per_patient
         self.max_windows = max_windows
 
-        self.windows, self.labels = self._load_all_data()
+        # ``recording_ids[i]`` is the index into ``recordings`` of the EDF file
+        # that window ``i`` was cut from; ``recording_has_seizure`` is per file.
+        self.recordings = []
+        self.recording_has_seizure = []
+        self.windows, self.labels, self.recording_ids = self._load_all_data()
 
     def _load_edf(self, edf_file, seizure_intervals):
         """Read one EDF recording and cut it into labeled windows.
@@ -104,6 +111,7 @@ class CHBMITDataset(Dataset):
         """Walk the patient directories and accumulate every window."""
         windows = []
         labels = []
+        recording_ids = []
 
         patient_dirs = sorted(d for d in self.data_dir.iterdir() if d.is_dir())
         if self.max_patients is not None:
@@ -119,12 +127,16 @@ class CHBMITDataset(Dataset):
                 edf_files = edf_files[:self.max_files_per_patient]
 
             for edf_file in edf_files:
-                file_windows, file_labels = self._load_edf(
-                    edf_file,
-                    seizure_info.get(edf_file.name, []),
-                )
+                intervals = seizure_info.get(edf_file.name, [])
+                file_windows, file_labels = self._load_edf(edf_file, intervals)
+
+                rec_id = len(self.recordings)
+                self.recordings.append(f"{patient_dir.name}/{edf_file.name}")
+                self.recording_has_seizure.append(bool(intervals))
+
                 windows.extend(file_windows)
                 labels.extend(file_labels)
+                recording_ids.extend([rec_id] * len(file_windows))
 
                 if self.max_windows is not None and len(windows) >= self.max_windows:
                     print(f"Reached max_windows={self.max_windows}, stopping early.")
@@ -134,28 +146,31 @@ class CHBMITDataset(Dataset):
                 break
 
         print(
-            f"Total windows: {len(windows)}, "
+            f"Total windows: {len(windows)} from {len(self.recordings)} recordings "
+            f"({sum(self.recording_has_seizure)} with seizures), "
             f"Seizure: {int(np.sum(labels))}, "
             f"Non-seizure: {len(labels) - int(np.sum(labels))}"
         )
 
         if len(windows) == 0:
-            return np.array([]), np.array([])
+            return np.array([]), np.array([]), np.array([])
 
         # Channel counts vary slightly between recordings; keep only the
         # dominant shape so the windows can be stacked into one array.
         expected_shape = windows[0].shape
-        good_windows, good_labels = [], []
-        for w, y in zip(windows, labels):
+        good_windows, good_labels, good_recs = [], [], []
+        for w, y, r in zip(windows, labels, recording_ids):
             if w.shape == expected_shape:
                 good_windows.append(w)
                 good_labels.append(y)
+                good_recs.append(r)
 
         print(f"Keeping {len(good_windows)} windows after filtering shape mismatches")
 
         return (
             np.array(good_windows, dtype=np.float32),
             np.array(good_labels, dtype=np.int64),
+            np.array(good_recs, dtype=np.int64),
         )
 
     def _parse_summary(self, patient_dir):
@@ -189,6 +204,11 @@ class CHBMITDataset(Dataset):
                     pending_onset = None
 
         return seizure_info
+
+    @property
+    def stride_seconds(self):
+        """Seconds of recording each successive window advances by."""
+        return self.stride / self.target_fs
 
     def __len__(self):
         return len(self.labels)
