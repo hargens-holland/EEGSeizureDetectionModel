@@ -61,6 +61,8 @@ The fix is threshold selection, not a new architecture — choose the decision t
 
 The scripts in this repository evaluate the way a seizure-detection paper would, and every entry point — both CNNs, the baselines, and the threshold sweep — shares the same code path in [`src/train_utils.py`](src/train_utils.py).
 
+> **Status: recording-level evaluation in progress.** The protocol below is implemented and tested on synthetic data, but has not yet been run on CHB-MIT. The only real numbers in this README are the course results above, from the window-level split.
+
 **Recording-level split.** Windows overlap by 50%, so any two neighbours share two seconds of identical signal. A random split over windows puts a test window's neighbour in training more often than not; the model is then partly scored on how well it recognises near-copies of what it has already seen. The default split (`--split recording`) instead assigns each EDF file wholesale to train, val, or test, so no signal in the test set has been seen during training. Recordings that contain a seizure are rare — a handful per patient — so they are allocated separately from seizure-free recordings, guaranteeing every split has positive windows. The original window-level split is kept as `--split window` so the leaky result can be reproduced and compared.
 
 **Threshold chosen on validation, reported on test.** After training, the script sweeps the decision threshold on the *validation* split and picks the one with the highest sensitivity whose false-alarm rate stays within a budget (`--fa-budget`, default 5 per hour; falls back to Youden's J if nothing qualifies). It then reports test sensitivity, specificity, false alarms per hour, and AUC at that fixed threshold — alongside the same numbers at the default 0.5, so the effect of choosing an operating point is visible in one place. Tuning the threshold on test and then reporting test numbers would be a second, subtler form of leakage.
@@ -170,7 +172,7 @@ Each training script writes its best checkpoint to `cnn1d.pth` / `cnn2d.pth` (gi
 
 ## Limitations
 
-- **The results table is from the course run**, under the window-level split and the original labels. It is kept because it is the result the project was graded on and because the accuracy-vs-sensitivity story it tells holds regardless. Numbers from the current recording-level protocol will be lower and more trustworthy.
+- **The results table is from the course run**, under the window-level split and the original labels. It is kept because it is the result the project was graded on and because the accuracy-vs-sensitivity story it tells holds regardless. The recording-level protocol has not yet been run on real data; when it is, its numbers will replace the table and will be lower and more trustworthy.
 - **Cross-patient generalisation is untested.** The recording-level split holds out files within patients, which is the standard patient-specific CHB-MIT evaluation. Holding out entire patients is the stronger claim, needs many more patients than a laptop run loads, and is the central open problem in this task — seizure morphology varies enormously between individuals.
 - **Trained on a subset.** Compute limits meant training on a small number of patients rather than all 23.
 - **No trained checkpoint is committed.** The metrics above are reproduced from the project report; the training runs that produced them were not preserved.
