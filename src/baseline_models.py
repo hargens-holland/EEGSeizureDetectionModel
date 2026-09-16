@@ -19,6 +19,7 @@ from sklearn.linear_model import LogisticRegression
 
 from data_loader import CHBMITDataset
 from metrics import compute_metrics
+from train_utils import random_split_indices
 
 
 SplitData = Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray]
@@ -34,15 +35,8 @@ def prepare_dataset(data_dir: Path, train_ratio: float = 0.7, val_ratio: float =
     n_samples = len(y)
     X = X.reshape(n_samples, -1)
 
-    rng = np.random.default_rng(seed)
-    indices = rng.permutation(n_samples)
-
-    train_end = int(train_ratio * n_samples)
-    val_end = int((train_ratio + val_ratio) * n_samples)
-
-    train_idx = indices[:train_end]
-    val_idx = indices[train_end:val_end]
-    test_idx = indices[val_end:]
+    # Same split helper as the CNN scripts, so all five models share a test set.
+    train_idx, val_idx, test_idx = random_split_indices(n_samples, seed, train_ratio, val_ratio)
 
     return (
         X[train_idx],

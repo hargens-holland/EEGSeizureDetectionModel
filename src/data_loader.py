@@ -9,7 +9,7 @@ Turns multi-hour EDF recordings into fixed-length labeled windows:
 import numpy as np
 import mne
 import torch
-from torch.utils.data import Dataset, DataLoader
+from torch.utils.data import Dataset
 from pathlib import Path
 from scipy import signal
 
@@ -57,8 +57,13 @@ class CHBMITDataset(Dataset):
 
         self.windows, self.labels = self._load_all_data()
 
-    def _load_edf(self, edf_file, seizure_times):
-        """Read one EDF recording and cut it into labeled windows."""
+    def _load_edf(self, edf_file, seizure_intervals):
+        """Read one EDF recording and cut it into labeled windows.
+
+        Args:
+            edf_file: Path to the recording.
+            seizure_intervals: List of (onset, end) times in seconds.
+        """
         raw = mne.io.read_raw_edf(edf_file, preload=True, verbose=False)
 
         # Drop DC drift and high-frequency noise outside the band of interest.
@@ -81,11 +86,13 @@ class CHBMITDataset(Dataset):
             window -= window.mean(axis=1, keepdims=True, dtype=np.float32)
             window /= (window.std(axis=1, keepdims=True, dtype=np.float32) + 1e-6)
 
-            # A window counts as a seizure if it overlaps any annotated onset.
-            window_time = start / self.target_fs
+            # A window counts as a seizure if any part of it overlaps any
+            # annotated seizure interval.
+            window_start = start / self.target_fs
+            window_end = window_start + self.window_size
             is_seizure = any(
-                onset <= window_time < onset + self.window_size
-                for onset in seizure_times
+                window_start < seizure_end and window_end > onset
+                for onset, seizure_end in seizure_intervals
             )
 
             windows.append(window)
@@ -152,9 +159,10 @@ class CHBMITDataset(Dataset):
         )
 
     def _parse_summary(self, patient_dir):
-        """Extract seizure onset times from a patient's summary file.
+        """Extract seizure intervals from a patient's summary file.
 
-        Returns a dict mapping EDF filename -> list of onset times in seconds.
+        Returns a dict mapping EDF filename -> list of (onset, end) times in
+        seconds. Files with no seizures map to an empty list.
         """
         summary_file = patient_dir / f"{patient_dir.name}-summary.txt"
         seizure_info = {}
@@ -166,13 +174,19 @@ class CHBMITDataset(Dataset):
             lines = f.readlines()
 
         current_file = None
+        pending_onset = None
         for line in lines:
             if 'File Name:' in line:
                 current_file = line.split(':')[1].strip()
                 seizure_info[current_file] = []
-            elif 'Seizure Start Time:' in line and current_file:
-                start = int(line.split(':')[1].strip().split()[0])
-                seizure_info[current_file].append(start)
+                pending_onset = None
+            elif 'Seizure' in line and 'Start Time:' in line and current_file:
+                pending_onset = int(line.split(':')[1].strip().split()[0])
+            elif 'Seizure' in line and 'End Time:' in line and current_file:
+                end = int(line.split(':')[1].strip().split()[0])
+                if pending_onset is not None:
+                    seizure_info[current_file].append((pending_onset, end))
+                    pending_onset = None
 
         return seizure_info
 
@@ -246,26 +260,3 @@ class SpectrogramDataset(Dataset):
         )
 
         return torch.FloatTensor(spectrogram), torch.tensor(int(label), dtype=torch.long)
-
-
-def get_dataloaders(data_dir, batch_size=32, train_ratio=0.7, val_ratio=0.15):
-    """Create train/val/test dataloaders over the raw windows."""
-    dataset = CHBMITDataset(data_dir)
-
-    n = len(dataset)
-    if n == 0:
-        return None, None, None
-
-    indices = np.random.permutation(n)
-    train_end = int(train_ratio * n)
-    val_end = int((train_ratio + val_ratio) * n)
-
-    train_dataset = torch.utils.data.Subset(dataset, indices[:train_end])
-    val_dataset = torch.utils.data.Subset(dataset, indices[train_end:val_end])
-    test_dataset = torch.utils.data.Subset(dataset, indices[val_end:])
-
-    train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True, num_workers=0)
-    val_loader = DataLoader(val_dataset, batch_size=batch_size, shuffle=False, num_workers=0)
-    test_loader = DataLoader(test_dataset, batch_size=batch_size, shuffle=False, num_workers=0)
-
-    return train_loader, val_loader, test_loader

@@ -42,7 +42,7 @@ Test-set performance across all five models:
 
 ### Why accuracy is the wrong headline metric
 
-A seizure occupies roughly 3–6% of a recording at most, and far less in the subsets used here. A model that outputs "no seizure" unconditionally therefore scores near-perfect accuracy while being clinically worthless. That is precisely what every model in the table above does: accuracy ≥ 0.996, specificity 1.000, and sensitivity **0.000** — not a single seizure window was ever predicted positive.
+A seizure occupies roughly 3–6% of a recording at most — and, because of the labeling bug described below, the positive class in these runs was smaller still. A model that outputs "no seizure" unconditionally therefore scores near-perfect accuracy while being clinically worthless. That is precisely what every model in the table above does: accuracy ≥ 0.996, specificity 1.000, and sensitivity **0.000** — not a single seizure window was ever predicted positive.
 
 Accuracy hides this completely. Sensitivity exposes it in one number.
 
@@ -57,13 +57,19 @@ AUC is threshold-free: it asks "is a seizure window scored higher than a non-sei
 
 The fix is threshold selection, not a new architecture — sweep the decision threshold, pick the point on the ROC curve that hits a target sensitivity, and accept the false-alarm rate that comes with it. In seizure detection you would tolerate a substantial false-alarm rate to get sensitivity meaningfully above zero, because a missed seizure costs far more than a spurious alert. Class-weighted loss (implemented via `--use-class-weights`) and focal loss attack the same problem during training rather than after it.
 
+### Post-mortem: a labeling bug made the positive class rarer than it should have been
+
+While packaging this repository I found that the original data loader only read each seizure's *onset* from `chbNN-summary.txt` and labeled a window positive if its start fell within four seconds of that onset. Seizure *end* times were never parsed. Every seizure — whether it lasted 10 seconds or 3 minutes — produced at most two positive windows.
+
+CHB-MIT seizures average around 60 seconds, so the true positive rate at 4 s / 50 % overlap should be roughly 30 windows per seizure, not two. The loader was under-labeling positives by an order of magnitude, which made an already severe imbalance far worse and is a likely contributor to the zero-sensitivity result. The bug is fixed in [`src/data_loader.py`](src/data_loader.py): the parser now captures `(onset, end)` intervals, and a window is positive if any part of it overlaps any interval. The numbers in the table above were produced *before* that fix and have not been re-run.
+
 > **On the AUC figures.** Train/val/test splits are random over 4-second windows with 50% overlap, so a window and its overlapping neighbour — sharing two seconds of identical signal — can land on opposite sides of the split. The reported AUC is optimistic as a result, and a patient-independent split would be the honest evaluation. See [Limitations](#limitations).
 
 ### Threshold sweep (planned)
 
 The CNNs' high AUC alongside zero sensitivity points to a threshold-selection problem rather than a modeling one. The next step is to sweep the decision threshold across the test set and report the sensitivity / false-alarms-per-hour tradeoff, then select an operating point deliberately rather than inheriting `argmax`'s implicit 0.5.
 
-[`src/threshold_sweep.py`](src/threshold_sweep.py) implements this and runs in minutes on an existing checkpoint — no retraining required. It is pending recovery of the trained weights, which were never committed to this repository.
+[`src/threshold_sweep.py`](src/threshold_sweep.py) implements this and runs in minutes on an existing checkpoint — no retraining required. It has not yet been run: the trained weights were never committed to this repository and the original training runs were not preserved.
 
 ```bash
 python src/threshold_sweep.py --data ./data --checkpoint cnn2d.pth --model 2d
@@ -83,7 +89,7 @@ Labels come from parsing each patient's `chbNN-summary.txt`; a window is positiv
 
 Three approaches on the identical `(23, 1024)` window:
 
-**1D CNN** — four conv blocks (kernel 7→5→5→3, channels 64→128→256→256) convolving along time across all 23 channels, then global average pooling into a 2-class head. Treats EEG as what it is: a multi-channel time series. ~700K parameters.
+**1D CNN** — four conv blocks (kernel 7→5→5→3, channels 64→128→256→256) convolving along time across all 23 channels, then global average pooling into a 2-class head. Treats EEG as what it is: a multi-channel time series. ~414K parameters.
 
 **2D CNN** — averages the 23 channels into one signal, computes an STFT spectrogram, and runs three conv blocks (32→64→128) over it as a single-channel image. Captures time–frequency structure that a purely temporal model can miss, at the cost of discarding per-channel spatial information. ~93K parameters.
 
@@ -110,7 +116,10 @@ src/
 docs/
   final-report.pdf   Written report
   presentation.pdf   Slide deck
+LICENSE              MIT
 ```
+
+The [final report](docs/final-report.pdf) and [slide deck](docs/presentation.pdf) are the versions submitted for the course. One caveat: the report's narrative describes the 2D CNN as achieving "the strongest sensitivity" of the models; its own results table shows 0.000 for every model, and the table is correct. This README supersedes the report where they disagree.
 
 ## Tech stack
 
@@ -159,6 +168,7 @@ Each training script writes its best checkpoint to `cnn1d.pth` / `cnn2d.pth` (gi
 - **No model achieves non-zero sensitivity at the default threshold.** No threshold sweep was run, so the usable operating point of the CNNs is unmeasured.
 - **Trained on a subset.** Compute limits meant training on a small number of patients rather than all 23, and seizure morphology varies enormously between individuals.
 - **Cross-patient generalization is untested and is the central open problem** in this task.
+- **The reported results predate the labeling fix.** The loader that produced the table above under-labeled seizure windows (see the [post-mortem](#post-mortem-a-labeling-bug-made-the-positive-class-rarer-than-it-should-have-been)). Rerunning with the corrected labels is the first thing to do before trusting any number here.
 - **No trained checkpoint is committed to this repository.** The metrics above are reproduced from the project report; the training runs that produced them were not preserved.
 
 ## Credits
@@ -167,7 +177,7 @@ ECE 539 (Introduction to Artificial Neural Networks), University of Wisconsin–
 
 | | |
 |---|---|
-| **Holland Hargens** | 2D CNN architecture and spectrogram pipeline; final report and presentation; this repository's restructuring, documentation, and threshold analysis |
+| **Holland Hargens** | 2D CNN architecture and spectrogram pipeline; final report and presentation; this repository's restructuring, documentation, threshold analysis, and the labeling fix |
 | **Stephen Bail** | 1D CNN architecture; revisions to the 2D CNN training script; evaluation and literature review |
 | **Kushal Mishra** | Classical baselines (logistic regression, SVM, random forest) |
 | **Donovan Johnson** | EDF data loader and windowing pipeline |
